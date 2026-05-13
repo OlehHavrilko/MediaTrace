@@ -1,18 +1,19 @@
 import unittest
 import os
+from unittest.mock import patch
 from vision_analyzer import VisionAnalyzer
 
 class TestVisionAnalyzer(unittest.TestCase):
-    def setUp(self):
-        # We don't have a real API key for testing, so it should fall back to MOCK mode.
-        # Ensure GOOGLE_API_KEY is not in env for this test
-        if "GOOGLE_API_KEY" in os.environ:
-            del os.environ["GOOGLE_API_KEY"]
-        self.analyzer = VisionAnalyzer()
+    @patch.dict(os.environ, {"GOOGLE_API_KEY": "fake-key"})
+    def test_init_success(self):
+        with patch('google.generativeai.GenerativeModel'):
+            analyzer = VisionAnalyzer()
+            self.assertIsNotNone(analyzer.model)
 
-    def test_mock_mode(self):
-        result = self.analyzer.analyze_frame("test.jpg")
-        self.assertIn("MOCK ANALYSIS", result)
+    def test_init_missing_key(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(ValueError):
+                VisionAnalyzer()
 
 if __name__ == "__main__":
     unittest.main()
