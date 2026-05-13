@@ -1,121 +1,143 @@
 import os
 import subprocess
 import logging
-import json
+from typing import List, Dict, Any
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("MediaTrace.Decomposer")
 
 class VideoDecomposer:
-    def __init__(self, output_base="temp"):
-        self.output_base = output_base
+    """
+    Handles video file decomposition into audio and visual components.
+    Uses FFmpeg for processing.
+    """
+    def __init__(self, output_base: str = "temp"):
+        self.output_base = os.path.abspath(output_base)
         if not os.path.exists(self.output_base):
             os.makedirs(self.output_base)
+            logger.info(f"Created base output directory: {self.output_base}")
 
-    def extract_audio(self, video_path, output_name="audio.wav"):
+    def _run_ffmpeg(self, args: List[str], desc: str):
+        """Helper to run ffmpeg commands safely."""
+        cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error'] + args
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"FFmpeg error ({desc}): {e.stderr}")
+            raise RuntimeError(f"FFmpeg failed during {desc}")
+
+    def extract_audio(self, video_path: str, video_id: str) -> str:
         """
-        Extracts audio from video file.
+        Extracts high-quality audio in WAV format.
         """
-        output_path = os.path.join(self.output_base, output_name)
-        cmd = [
-            'ffmpeg', '-y', '-i', video_path,
+        audio_dir = os.path.join(self.output_base, video_id)
+        if not os.path.exists(audio_dir):
+            os.makedirs(audio_dir)
+            
+        output_path = os.path.join(audio_dir, "audio.wav")
+        args = [
+            '-y', '-i', video_path,
             '-vn', '-acodec', 'pcm_s16le', '-ar', '44100', '-ac', '2',
             output_path
         ]
-        try:
-            subprocess.run(cmd, check=True, capture_output=True)
-            logger.info(f"Audio extracted to: {output_path}")
-            return output_path
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Error extracting audio: {e.stderr.decode()}")
-            raise
+        self._run_ffmpeg(args, "audio extraction")
+        logger.info(f"Audio extracted: {output_path}")
+        return output_path
 
-    def get_scene_changes(self, video_path, threshold=0.4):
+    def get_scene_changes(self, video_path: str, threshold: float = 0.3) -> List[float]:
         """
-        Detects scene changes using ffmpeg.
-        Returns a list of timestamps.
+        Detects scene change timestamps using FFmpeg's scene detection.
         """
+        logger.info(f"Detecting scenes with threshold {threshold}...")
         cmd = [
-            'ffmpeg', '-i', video_path,
+            'ffmpeg', '-hide_banner', '-i', video_path,
             '-filter:v', f"select='gt(scene,{threshold})',showinfo",
             '-f', 'null', '-'
         ]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True)
-            # Parse showinfo output
             timestamps = []
             for line in result.stderr.split('\n'):
                 if 'pts_time:' in line:
-                    # Example line: [Parsed_showinfo_1 @ 0x...] n:   1 pts: 153600 pts_time:5.12 ...
-                    parts = line.split('pts_time:')
-                    if len(parts) > 1:
-                        ts = float(parts[1].split()[0])
-                        timestamps.append(ts)
-            return sorted(list(set(timestamps)))
+                    # Parse pts_time:5.12
+                    try:
+                        pts_part = line.split('pts_time:')[1].split()[0]
+                        timestamps.append(float(pts_part))
+                    except (IndexError, ValueError):
+                        continue
+            
+            unique_ts = sorted(list(set(timestamps)))
+            logger.info(f"Detected {len(unique_ts)} scene changes.")
+            return unique_ts
         except Exception as e:
-            logger.error(f"Error detecting scenes: {e}")
+            logger.error(f"Scene detection failed: {e}")
             return []
 
-    def extract_frames(self, video_path, timestamps, output_dir="frames"):
+    def extract_frames(self, video_path: str, video_id: str, timestamps: List[float]) -> List[str]:
         """
-        Extracts frames at specific timestamps.
+        Extracts frames at specific timestamps with high quality.
         """
-        out_path = os.path.join(self.output_base, output_dir)
-        if not os.path.exists(out_path):
-            os.makedirs(out_path)
+        frames_dir = os.path.join(self.output_base, video_id, "frames")
+        if not os.path.exists(frames_dir):
+            os.makedirs(frames_dir)
         
         frame_paths = []
         for i, ts in enumerate(timestamps):
-            frame_name = f"frame_{i:04d}_{ts:.2f}.jpg"
-            frame_path = os.path.join(out_path, frame_name)
-            cmd = [
-                'ffmpeg', '-y', '-ss', str(ts),
+            frame_name = f"frame_{i:04d}_ts{ts:.2f}.jpg"
+            frame_path = os.path.join(frames_dir, frame_name)
+            
+            # Using -ss before -i for faster seeking
+            args = [
+                '-y', '-ss', f"{ts:.3f}",
                 '-i', video_path,
                 '-frames:v', '1',
-                '-q:v', '2', # High quality
+                '-q:v', '2',
                 frame_path
             ]
             try:
-                subprocess.run(cmd, check=True, capture_output=True)
+                self._run_ffmpeg(args, f"frame extraction at {ts}")
                 frame_paths.append(frame_path)
-            except subprocess.CalledProcessError as e:
-                logger.warning(f"Failed to extract frame at {ts}: {e.stderr.decode()}")
+            except Exception:
+                continue
         
-        logger.info(f"Extracted {len(frame_paths)} frames to {out_path}")
+        logger.info(f"Extracted {len(frame_paths)} frames.")
         return frame_paths
 
-    def decompose(self, video_metadata):
+    def decompose(self, video_metadata: Dict[str, Any], scene_threshold: float = 0.3) -> Dict[str, Any]:
         """
-        Full decomposition pipeline.
+        Orchestrates the full decomposition process.
         """
         video_path = video_metadata['file_path']
+        video_id = video_metadata['id']
+        duration = video_metadata.get('duration', 0)
         
-        # 1. Audio
-        audio_path = self.extract_audio(video_path)
+        logger.info(f"Decomposing video: {video_id}")
+        
+        # 1. Extract Audio
+        audio_path = self.extract_audio(video_path, video_id)
         
         # 2. Scene Detection
-        scene_timestamps = self.get_scene_changes(video_path)
+        scene_ts = self.get_scene_changes(video_path, threshold=scene_threshold)
         
-        # Add start frame and periodic frames if video is long
-        duration = video_metadata.get('duration', 0)
-        all_timestamps = {0.0}
-        all_timestamps.update(scene_timestamps)
+        # 3. Compile list of timestamps to extract (Scenes + Periodic)
+        ts_to_extract = {0.0} # Always start
+        ts_to_extract.update(scene_ts)
         
-        # Periodic sampling every 2 seconds if not already covered
+        # Add a frame every 5 seconds if not already covered
         if duration:
-            for t in range(0, int(duration), 2):
-                all_timestamps.add(float(t))
+            for t in range(5, int(duration), 5):
+                ts_to_extract.add(float(t))
+            ts_to_extract.add(float(duration - 0.1) if duration > 0.1 else 0.0) # Last frame
+            
+        sorted_ts = sorted(list(ts_to_extract))
         
-        sorted_timestamps = sorted(list(all_timestamps))
-        
-        # 3. Frames
-        frame_paths = self.extract_frames(video_path, sorted_timestamps)
+        # 4. Extract Frames
+        frame_paths = self.extract_frames(video_path, video_id, sorted_ts)
         
         return {
+            'video_id': video_id,
             'audio_path': audio_path,
-            'scene_timestamps': scene_timestamps,
             'frame_paths': frame_paths,
-            'timestamps': sorted_timestamps
+            'scene_timestamps': scene_ts,
+            'all_timestamps': sorted_ts,
+            'output_dir': os.path.join(self.output_base, video_id)
         }
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
