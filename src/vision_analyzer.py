@@ -1,72 +1,53 @@
-import os
 import logging
-import time
-from typing import List, Dict, Any
-from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from transformers import AutoModelForVision2Seq, AutoProcessor
 from PIL import Image
-from object_detector import ObjectDetector
+import torch
+from typing import Dict, Any
 
-load_dotenv()
 logger = logging.getLogger("MediaTrace.VisionAnalyzer")
+
+class LocalVisionModel:
+    """
+    Local Vision-to-Text model implementation (Moondream2).
+    """
+    def __init__(self, model_id: str = "vikhyatk/moondream2"):
+        logger.info(f"Loading local model: {model_id}...")
+        self.model = AutoModelForVision2Seq.from_pretrained(
+            model_id, trust_remote_code=True, torch_dtype=torch.float32
+        )
+        self.processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+        logger.info("Local model loaded successfully.")
+
+    def caption(self, image_path: str) -> str:
+        image = Image.open(image_path)
+        enc_image = self.model.encode_image(image)
+        return self.model.answer_question(enc_image, "Describe this scene in detail, including characters, setting, objects, and visual style.", self.processor)
 
 class VisionAnalyzer:
     """
-    Analyzes video frames using Google Gemini Vision capabilities 
-    and YOLOv8 object detection. Uses modern google-genai SDK.
+    Analyzes video frames using local Moondream2 model and YOLOv8.
     """
-    def __init__(self, model_name: str = 'gemini-2.0-flash'):
-        self.api_key = os.environ.get("GOOGLE_API_KEY")
-        if not self.api_key:
-            logger.error("GOOGLE_API_KEY environment variable is not set.")
-            raise ValueError("API key missing")
-        
-        # Initialize the modern client
-        self.client = genai.Client(api_key=self.api_key)
-        self.model_name = model_name
+    def __init__(self):
+        self.model = LocalVisionModel()
+        from object_detector import ObjectDetector
         self.detector = ObjectDetector()
-        
-        self.prompt = """
-        Analyze this video frame. Provide a structured JSON output with the following keys:
-        - 'characters': list of descriptions or names
-        - 'setting': detailed description of environment
-        - 'objects_found': list of objects found in the scene
-        - 'visual_style': description of lighting, color, camera angle
-        - 'source_hint': movie/series guess if recognizable
-        - 'confidence': 0.0 to 1.0
-        """
+        logger.info("VisionAnalyzer initialized with local models.")
 
-    def analyze_frame(self, frame_path: str, retries: int = 3) -> Dict[str, Any]:
+    def analyze_frame(self, frame_path: str) -> Dict[str, Any]:
         """
-        Analyzes a single frame with Gemini (GenAI SDK) and YOLO.
+        Analyzes a single frame with local Vision model and YOLO.
         """
-        if not os.path.exists(frame_path):
-            return {"error": "File not found"}
-
         # 1. Run YOLO detection
         yolo_results = self.detector.detect(frame_path)
 
-        # 2. Run Gemini Vision
-        for attempt in range(retries):
-            try:
-                img = Image.open(frame_path)
-                response = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=[self.prompt, img]
-                )
-                
-                return {
-                    "analysis": response.text, 
-                    "yolo_detections": yolo_results,
-                    "status": "success"
-                }
-            
-            except Exception as e:
-                logger.warning(f"Attempt {attempt+1} failed for {frame_path}: {e}")
-                time.sleep(2 ** attempt)
-                
-        return {"error": "Analysis failed after retries"}
+        # 2. Run Local Vision Description
+        analysis_text = self.model.caption(frame_path)
+        
+        return {
+            "analysis": analysis_text, 
+            "yolo_detections": yolo_results,
+            "status": "success"
+        }
 
     def analyze_frames(self, frame_paths: List[str], timestamps: List[float]) -> List[Dict[str, Any]]:
         results = []
