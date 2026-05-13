@@ -11,6 +11,7 @@ from source_id import SourceIdentifier
 from editing_analyzer import EditingAnalyzer
 from report_generator import ReportGenerator
 from cache import PipelineCache
+from database import SessionLocal, VideoAnalysis, init_db
 
 # Setup logging
 logging.basicConfig(
@@ -20,6 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger("MediaTrace")
 
 def run_pipeline(url):
+    init_db() # Ensure tables exist
     cache = PipelineCache()
     cached_data = cache.get(url)
     if cached_data:
@@ -70,7 +72,25 @@ def run_pipeline(url):
         'editing': editing_info
     }
     
+    # Save to Cache and Database
     cache.set(url, final_data)
+    
+    db = SessionLocal()
+    analysis_entry = VideoAnalysis(
+        video_url=url,
+        video_id=metadata['id'],
+        title=metadata['title'],
+        metadata_json=metadata,
+        vision_results=vision_results,
+        audio_results=audio_results,
+        editing_results=editing_info,
+        potential_sources=source_info
+    )
+    db.add(analysis_entry)
+    db.commit()
+    db.refresh(analysis_entry)
+    db.close()
+    
     reporter.generate(final_data, "report.json")
     return final_data
 
