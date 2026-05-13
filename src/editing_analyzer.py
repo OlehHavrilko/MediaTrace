@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import easyocr
 import logging
+from typing import List, Dict, Any
 
 logger = logging.getLogger("MediaTrace.EditingAnalyzer")
 

@@ -1,9 +1,10 @@
 import os
 import logging
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from dotenv import load_dotenv
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from PIL import Image
 from object_detector import ObjectDetector
 
@@ -13,17 +14,19 @@ logger = logging.getLogger("MediaTrace.VisionAnalyzer")
 class VisionAnalyzer:
     """
     Analyzes video frames using Google Gemini Vision capabilities 
-    and YOLOv8 object detection.
+    and YOLOv8 object detection. Uses modern google-genai SDK.
     """
-    def __init__(self, model_name: str = 'gemini-1.5-flash'):
+    def __init__(self, model_name: str = 'gemini-2.0-flash'):
         self.api_key = os.environ.get("GOOGLE_API_KEY")
         if not self.api_key:
             logger.error("GOOGLE_API_KEY environment variable is not set.")
             raise ValueError("API key missing")
         
-        genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel(model_name)
+        # Initialize the modern client
+        self.client = genai.Client(api_key=self.api_key)
+        self.model_name = model_name
         self.detector = ObjectDetector()
+        
         self.prompt = """
         Analyze this video frame. Provide a structured JSON output with the following keys:
         - 'characters': list of descriptions or names
@@ -36,7 +39,7 @@ class VisionAnalyzer:
 
     def analyze_frame(self, frame_path: str, retries: int = 3) -> Dict[str, Any]:
         """
-        Analyzes a single frame with Gemini and YOLO.
+        Analyzes a single frame with Gemini (GenAI SDK) and YOLO.
         """
         if not os.path.exists(frame_path):
             return {"error": "File not found"}
@@ -48,7 +51,10 @@ class VisionAnalyzer:
         for attempt in range(retries):
             try:
                 img = Image.open(frame_path)
-                response = self.model.generate_content([self.prompt, img])
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=[self.prompt, img]
+                )
                 
                 return {
                     "analysis": response.text, 
@@ -73,12 +79,3 @@ class VisionAnalyzer:
                 **analysis
             })
         return results
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    # Simple CLI test
-    import sys
-    if len(sys.argv) > 1:
-        analyzer = VisionAnalyzer()
-        result = analyzer.analyze_frame(sys.argv[1])
-        print(result)
