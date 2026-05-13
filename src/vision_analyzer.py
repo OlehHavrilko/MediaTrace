@@ -1,51 +1,43 @@
+import os
+import cv2
+import numpy as np
 import logging
-from transformers import AutoModelForVision2Seq, AutoProcessor
-from PIL import Image
-import torch
-from typing import Dict, Any
+from typing import List, Dict, Any
+from object_detector import ObjectDetector
+import easyocr
 
 logger = logging.getLogger("MediaTrace.VisionAnalyzer")
 
-class LocalVisionModel:
-    """
-    Local Vision-to-Text model implementation (Moondream2).
-    """
-    def __init__(self, model_id: str = "vikhyatk/moondream2"):
-        logger.info(f"Loading local model: {model_id}...")
-        self.model = AutoModelForVision2Seq.from_pretrained(
-            model_id, trust_remote_code=True, torch_dtype=torch.float32
-        )
-        self.processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
-        logger.info("Local model loaded successfully.")
-
-    def caption(self, image_path: str) -> str:
-        image = Image.open(image_path)
-        enc_image = self.model.encode_image(image)
-        return self.model.answer_question(enc_image, "Describe this scene in detail, including characters, setting, objects, and visual style.", self.processor)
-
 class VisionAnalyzer:
     """
-    Analyzes video frames using local Moondream2 model and YOLOv8.
+    Lightweight analysis of video frames using YOLOv8, OCR, and color statistics.
     """
     def __init__(self):
-        self.model = LocalVisionModel()
-        from object_detector import ObjectDetector
         self.detector = ObjectDetector()
-        logger.info("VisionAnalyzer initialized with local models.")
+        self.reader = easyocr.Reader(['en'], gpu=False) # Keep CPU for portability
+        logger.info("VisionAnalyzer initialized (Lightweight Mode).")
 
     def analyze_frame(self, frame_path: str) -> Dict[str, Any]:
         """
-        Analyzes a single frame with local Vision model and YOLO.
+        Extracts visual metadata: objects, text, and color palette.
         """
-        # 1. Run YOLO detection
+        # 1. YOLO Objects
         yolo_results = self.detector.detect(frame_path)
-
-        # 2. Run Local Vision Description
-        analysis_text = self.model.caption(frame_path)
         
+        # 2. OCR Text
+        text_results = self.reader.readtext(frame_path, detail=0)
+        
+        # 3. Color Stats (OpenCV)
+        img = cv2.imread(frame_path)
+        if img is not None:
+            avg_color = np.mean(img, axis=(0, 1)).tolist()
+        else:
+            avg_color = [0, 0, 0]
+            
         return {
-            "analysis": analysis_text, 
-            "yolo_detections": yolo_results,
+            "objects_found": yolo_results,
+            "text_found": text_results,
+            "avg_color_bgr": avg_color,
             "status": "success"
         }
 
