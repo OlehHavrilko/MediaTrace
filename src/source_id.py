@@ -1,89 +1,62 @@
 import os
 import logging
-import requests
-import google.generativeai as genai
+import tmdbsimple as tmdb
+from typing import Dict, Any, List, Optional
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("MediaTrace.SourceIdentifier")
 
 class SourceIdentifier:
-    def __init__(self, api_key=None, tmdb_key=None):
-        self.api_key = api_key or os.environ.get("GOOGLE_API_KEY")
-        self.tmdb_key = tmdb_key or os.environ.get("TMDB_API_KEY")
-        if self.api_key:
-            genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel('gemini-1.5-flash')
-        else:
-            self.model = None
-
-    def search_tmdb(self, query):
-        """
-        Searches TMDB for movies/TV shows.
-        """
-        if not self.tmdb_key:
-            return []
+    """
+    Identifies video sources using TMDB API based on multimodal insights.
+    """
+    def __init__(self, api_key: str = None):
+        self.api_key = api_key or os.environ.get("TMDB_API_KEY")
+        if not self.api_key:
+            logger.error("TMDB_API_KEY is missing.")
+            raise ValueError("TMDB_API_KEY must be provided.")
         
-        url = f"https://api.themoviedb.org/3/search/multi?api_key={self.tmdb_key}&query={query}"
+        tmdb.API_KEY = self.api_key
+        logger.info("SourceIdentifier initialized with TMDB.")
+
+    def search_media(self, query: str, media_type: str = 'movie') -> List[Dict[str, Any]]:
+        """
+        Searches TMDB for movies or TV shows.
+        """
         try:
-            response = requests.get(url)
-            return response.json().get('results', [])
+            if media_type == 'movie':
+                search = tmdb.Search()
+                response = search.movie(query=query)
+            else:
+                search = tmdb.Search()
+                response = search.tv(query=query)
+                
+            return response.get('results', [])
         except Exception as e:
             logger.error(f"TMDB search failed: {e}")
             return []
 
-    def identify(self, vision_results, audio_results):
+    def identify(self, analysis_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Uses LLM to identify the source based on all gathered evidence.
+        Attempts to identify the source based on gathered multimodal insights.
         """
-        # Combine evidence
-        evidence = "VISION ANALYSIS:\n"
-        for res in vision_results:
-            evidence += f"- {res['analysis']}\n"
+        potential_sources = []
         
-        evidence += "\nAUDIO TRANSCRIPTION:\n"
-        evidence += audio_results['transcription'].get('text', 'No speech detected.')
+        # 1. Use source_hint from vision analysis
+        vision_analysis = analysis_data.get('vision', {})
+        hint = vision_analysis.get('source_hint')
+        if hint and hint != "Unknown":
+            results = self.search_media(hint)
+            potential_sources.extend(results)
+            
+        # 2. Add transcription entities if available
+        # (This would be expanded with NER in a full implementation)
         
-        evidence += "\nMUSIC DETECTED:\n"
-        for m in audio_results['music']:
-            evidence += f"- {m['title']} by {m['artist']}\n"
-
-        prompt = f"""
-        Given the following evidence from a video analysis, identify the most likely source (Movie, TV Show, or Original Content).
-        
-        EVIDENCE:
-        {evidence}
-        
-        Provide your reasoning and name the source if possible. 
-        If it looks like original content (UGC), state so.
-        Return in JSON format:
-        {{
-            "source_name": "...",
-            "year": "...",
-            "type": "movie/tv/ugc",
-            "confidence": "high/medium/low",
-            "reasoning": "..."
-        }}
-        """
-
-        if not self.model:
-            return {
-                "source_name": "Unknown (MOCK)",
-                "year": "N/A",
-                "type": "unknown",
-                "confidence": "low",
-                "reasoning": "Running in mock mode."
-            }
-
-        try:
-            response = self.model.generate_content(prompt)
-            # Try to parse JSON from response (naive approach)
-            import json
-            text = response.text
-            if "```json" in text:
-                text = text.split("```json")[1].split("```")[0]
-            return json.loads(text)
-        except Exception as e:
-            logger.error(f"Identification failed: {e}")
-            return { "error": str(e), "raw_response": response.text if 'response' in locals() else None }
+        return potential_sources
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+    # CLI test (needs API key)
+    if os.environ.get("TMDB_API_KEY"):
+        si = SourceIdentifier()
+        results = si.search_media("Inception")
+        print(f"Found {len(results)} matches.")
